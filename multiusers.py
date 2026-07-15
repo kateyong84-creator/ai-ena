@@ -75,11 +75,32 @@ configure_ssl_certificates()
 # ──────────────────────────────────────────────
 # 경로 및 환경 변수
 # ──────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+def resolve_project_root() -> Path:
+    """로컬(KTENA/6.MultiService/code)과 Streamlit Cloud(평탄 배포) 경로를 모두 지원."""
+    here = Path(__file__).resolve().parent
+    for candidate in (
+        here.parents[1] if len(here.parents) > 1 else None,  # .../KTENA
+        here,  # Cloud: 스크립트와 같은 폴더
+        Path.cwd(),
+    ):
+        if candidate is None:
+            continue
+        if (candidate / "logo.png").exists() or (candidate / ".env").exists():
+            return candidate
+    return here
+
+
+PROJECT_ROOT = resolve_project_root()
 ENV_PATH = PROJECT_ROOT / ".env"
 LOGO_PATH = PROJECT_ROOT / "logo.png"
+# Cloud에서도 스크립트 옆 logo 를 찾는다
+if not LOGO_PATH.exists():
+    _local_logo = Path(__file__).resolve().parent / "logo.png"
+    if _local_logo.exists():
+        LOGO_PATH = _local_logo
 
 load_dotenv(dotenv_path=ENV_PATH)
+load_dotenv()  # Cloud / CWD 환경변수도 허용
 
 MODEL_NAME = "gpt-4o-mini"
 EMBEDDING_BATCH_SIZE = 10
@@ -149,10 +170,6 @@ def refresh_secrets() -> None:
 # 로깅
 # ──────────────────────────────────────────────
 def setup_logging() -> logging.Logger:
-    log_dir = PROJECT_ROOT / "logs"
-    log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / f"multiusers_{datetime.now().strftime('%Y%m%d')}.log"
-
     logger = logging.getLogger("multiusers")
     logger.setLevel(logging.WARNING)
     logger.handlers.clear()
@@ -162,16 +179,28 @@ def setup_logging() -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(logging.WARNING)
-    file_handler.setFormatter(formatter)
-
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.WARNING)
     console_handler.setFormatter(formatter)
-
-    logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+
+    # Streamlit Cloud 등 쓰기 권한이 없는 환경에서는 파일 로그를 생략한다.
+    for log_dir in (
+        PROJECT_ROOT / "logs",
+        Path.cwd() / "logs",
+        Path(tempfile.gettempdir()) / "ktena_logs",
+    ):
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / f"multiusers_{datetime.now().strftime('%Y%m%d')}.log"
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler.setLevel(logging.WARNING)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+            break
+        except OSError:
+            continue
+
     logger.propagate = False
 
     for noisy in (
